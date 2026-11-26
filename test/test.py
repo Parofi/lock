@@ -61,9 +61,13 @@ async def press_key(dut, key_char):
     # 3. Mantener presionada por > 10,000 ciclos (DEBOUNCE_LIMIT = 10,000 + margen sincronizador)
     await ClockCycles(dut.clk, 10_050)
 
-    # 4. Soltar la tecla (volver filas a alto) y esperar estabilización
+     # 4. Soltar la tecla (volver filas a alto) y dar tiempo a que avance el barrido
     dut.ui_in.value = 0x0F
-    await ClockCycles(dut.clk, 50)
+    await ClockCycles(dut.clk, 1500)
+    
+    # 4. Soltar la tecla (volver filas a alto) y esperar estabilización
+    #dut.ui_in.value = 0x0F
+    #await ClockCycles(dut.clk, 50)
 
 
 async def enter_sequence(dut, seq_str):
