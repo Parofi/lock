@@ -34,14 +34,14 @@ pinout:
   ui[7]: ""
 
   # Outputs
-  uo: "Teclado Columna 0"
-  uo: "Teclado Columna 1"
-  uo: "Teclado Columna 2"
-  uo: "Teclado Columna 3"
-  uo: "Unlock (1 = Abierto; '*' cierra manualmente)"
-  uo: "Error (1 = Clave incorrecta)"
-  uo: "Locked (1 = Bloqueado tras 3 intentos fallidos)"
-  uo: "Prog Mode (1 = Grabando nueva clave tras '#')"
+  uo[0]: "Teclado Columna 0"
+  uo[1]: "Teclado Columna 1"
+  uo[2]: "Teclado Columna 2"
+  uo[3]: "Teclado Columna 3"
+  uo[4]: "Unlock (1 = Abierto; '*' cierra manualmente)"
+  uo[5]: "Error (1 = Clave incorrecta)"
+  uo[6]: "Locked (1 = Bloqueado tras 3 intentos fallidos)"
+  uo[7]: "Prog Mode (1 = Grabando nueva clave tras '#')"
   
   # Bidirectional pins
   uio[0]: ""
