@@ -1,6 +1,6 @@
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, FallingEdge
+from cocotb.triggers import ClockCycles
 
 KEYMAP = {
     '1': (0, 0), '2': (0, 1), '3': (0, 2), 'A': (0, 3),
@@ -38,26 +38,28 @@ async def press_key(dut, key_char):
 
     # 1. Esperar a que la columna este inactiva (1)
     for _ in range(10000):
-        await FallingEdge(dut.clk)
+        await ClockCycles(dut.clk, 1)
         if ((int(dut.uo_out.value) & 0x0F) & target_col_mask) != 0:
             break
 
-    # 2. Esperar al flanco exacto en que la columna pasa a activa (0)
+    # 2. Esperar a que la columna pase a activa (0)
     for _ in range(10000):
-        await FallingEdge(dut.clk)
+        await ClockCycles(dut.clk, 1)
         if ((int(dut.uo_out.value) & 0x0F) & target_col_mask) == 0:
             break
     else:
         raise TimeoutError(f"Timeout esperando columna {col_idx} para '{key_char}'")
 
-    # 3. Presionar fila y sostener > 10,000 ciclos
+    # Esperar 5 ciclos adentro de la ventana activa de 1,000 ciclos
+    await ClockCycles(dut.clk, 5)
+
+    # 3. Presionar fila y sostener > 10,000 ciclos (DEBOUNCE_LIMIT = 10,000)
     dut.ui_in.value = 0x0F & ~(1 << row_idx)
     await ClockCycles(dut.clk, 10_050)
 
-    # 4. Soltar tecla
-    await FallingEdge(dut.clk)
+    # 4. Soltar tecla y dar margen al sincronizador de 2 etapas
     dut.ui_in.value = 0x0F
-    await ClockCycles(dut.clk, 100)
+    await ClockCycles(dut.clk, 50)
 
 
 async def enter_sequence(dut, seq_str):
