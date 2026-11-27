@@ -102,6 +102,7 @@ async def press_key(dut, key_char):
     await ClockCycles(dut.clk, 1500)
 
 '''
+from cocotb.triggers import ClockCycles, FallingEdge
 
 async def press_key(dut, key_char):
     """Simula la pulsación física esperando el inicio limpio de la ventana de columna."""
