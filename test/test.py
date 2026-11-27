@@ -70,7 +70,7 @@ async def press_key(dut, key_char):
     # 4. Soltar la tecla (volver filas a alto) y esperar estabilización
     #dut.ui_in.value = 0x0F
     #await ClockCycles(dut.clk, 50)
-'''
+
 
 from cocotb.triggers import ClockCycles, FallingEdge
 
@@ -101,7 +101,42 @@ async def press_key(dut, key_char):
     dut.ui_in.value = 0x0F
     await ClockCycles(dut.clk, 1500)
 
+'''
 
+async def press_key(dut, key_char):
+    """Simula la pulsación física esperando el inicio limpio de la ventana de columna."""
+    row_idx, col_idx = KEYMAP[key_char]
+    target_col_mask = 1 << col_idx
+
+    # 1. Esperar a que la columna deseada esté INACTIVA (en 1) primero,
+    #    para detectar el flanco exacto en que pasa a ACTIVA (en 0)
+    for _ in range(10000):
+        await FallingEdge(dut.clk)
+        col_val = int(dut.uo_out.value) & 0x0F
+        if (col_val & target_col_mask) != 0:
+            break
+
+    # 2. Ahora esperar al inicio exacto en que la columna baja a 0 (tendrá 1000 ciclos completos)
+    for _ in range(10000):
+        await FallingEdge(dut.clk)
+        col_val = int(dut.uo_out.value) & 0x0F
+        if (col_val & target_col_mask) == 0:
+            break
+    else:
+        raise TimeoutError(
+            f"Timeout esperando barrido de columna {col_idx} para tecla '{key_char}'"
+        )
+
+    # 3. Bajar la fila al inicio de la ventana (sobran ~998 ciclos antes de que cambie de columna)
+    dut.ui_in.value = 0x0F & ~(1 << row_idx)
+
+    # 4. Mantener presionada por > 10,000 ciclos
+    await ClockCycles(dut.clk, 10_050)
+
+    # 5. Soltar la tecla y esperar estabilización
+    await FallingEdge(dut.clk)
+    dut.ui_in.value = 0x0F
+    await ClockCycles(dut.clk, 100)
 
 
 
