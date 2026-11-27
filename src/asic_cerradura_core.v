@@ -13,6 +13,7 @@ module asic_cerradura_core (
 
     localparam [15:0] DEBOUNCE_LIMIT = 16'd10_000; // 10 ms a 1 MHz
     localparam [15:0] SCAN_LIMIT     = 16'd1_000;  // 1 ms por columna a 1 MHz
+    localparam [3:0]  KEY_LOCK       = 4'hE;       // Tecla '*' para cerrar manualmente
     localparam [3:0]  KEY_PROG       = 4'hF;       // Tecla '#' para programar
 
     // ------------------------------------------------------------------------
@@ -195,16 +196,20 @@ module asic_cerradura_core (
                 estado_siguiente = (intentos == 2'd2) ? S_LOCKED : S_IDLE;
             end
 
-            // --- Cerradura abierta: permite entrar a programación con '#' ---
+            // --- Cerradura abierta: '*' cierra manualmente, '#' entra a programar ---
             S_UNLOCK: begin
                 if (key_valid) begin
-                    if (key_code == KEY_PROG)
+                    if (key_code == KEY_LOCK)
+                        estado_siguiente = S_IDLE;
+                    else if (key_code == KEY_PROG)
                         estado_siguiente = S_PROG1;
                     else
                         estado_siguiente = (key_code == pass_d1) ? S_OK1 : S_ERR1;
                 end
             end
 
+
+            
             // --- Estados de programación de 4 dígitos ---
             S_PROG1:  if (key_valid) estado_siguiente = S_PROG2;
             S_PROG2:  if (key_valid) estado_siguiente = S_PROG3;
