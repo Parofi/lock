@@ -3,7 +3,7 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, RisingEdge
+from cocotb.triggers import ClockCycles, FallingEdge
 
 # Mapeo físico de cada tecla a (fila, columna) según la matriz 4x4:
 # Col 0: 1, 4, 7, *
@@ -102,7 +102,7 @@ async def press_key(dut, key_char):
     await ClockCycles(dut.clk, 1500)
 
 '''
-from cocotb.triggers import ClockCycles, FallingEdge
+
 
 async def press_key(dut, key_char):
     """Simula la pulsación física esperando el inicio limpio de la ventana de columna."""
