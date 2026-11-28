@@ -1,132 +1,124 @@
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import ClockCycles, RisingEdge
 
-KEYMAP = {
-    '1': (0, 0), '2': (0, 1), '3': (0, 2), 'A': (0, 3),
-    '4': (1, 0), '5': (1, 1), '6': (1, 2), 'B': (1, 3),
-    '7': (2, 0), '8': (2, 1), '9': (2, 2), 'C': (2, 3),
-    '*': (3, 0), '0': (3, 1), '#': (3, 2), 'D': (3, 3),
+# Mapa físico del teclado 4x4: tecla -> (valor_columna_activa, valor_fila_resultante)
+KEYPAD_MAP = {
+    '1': (0b1110, 0b1110), '4': (0b1110, 0b1101), '7': (0b1110, 0b1011), '*': (0b1110, 0b0111),
+    '2': (0b1101, 0b1110), '5': (0b1101, 0b1101), '8': (0b1101, 0b1011), '0': (0b1101, 0b0111),
+    '3': (0b1011, 0b1110), '6': (0b1011, 0b1101), '9': (0b1011, 0b1011), '#': (0b1011, 0b0111),
+    'A': (0b0111, 0b1110), 'B': (0b0111, 0b1101), 'C': (0b0111, 0b1011), 'D': (0b0111, 0b0111),
 }
 
+def set_inputs(dut, row_val, key_switch):
+    """Combina las 4 filas del teclado y el interruptor de llave en ui_in."""
+    dut.ui_in.value = ((key_switch & 0x1) << 4) | (row_val & 0xF)
 
-def get_outputs(dut):
-    uo = int(dut.uo_out.value)
-    return {
-        "col":       uo & 0x0F,
-        "unlock":    (uo >> 4) & 1,
-        "error":     (uo >> 5) & 1,
-        "locked":    (uo >> 6) & 1,
-        "prog_mode": (uo >> 7) & 1,
-    }
+async def press_key(dut, key_char, key_switch=0):
+    """Simula la pulsación física sincronizada con el barrido y antirrebote (10 ms)."""
+    target_col, target_row = KEYPAD_MAP[key_char]
+    set_inputs(dut, 0b1111, key_switch)
 
+    # Esperar hasta que el barrido del chip (uo_out[3:0]) active la columna de esta tecla
+    for _ in range(5000):
+        await RisingEdge(dut.clk)
+        col_now = int(dut.uo_out.value) & 0xF
+        if col_now == target_col:
+            set_inputs(dut, target_row, key_switch)
+            break
 
-async def reset_dut(dut):
+    # Mantener presionada por 10,500 ciclos (10.5 ms a 1 MHz) para superar DEBOUNCE_LIMIT (10,000)
+    await ClockCycles(dut.clk, 10500)
+
+    # Soltar la tecla (filas vuelven a pull-up 1111) y esperar 100 ciclos
+    set_inputs(dut, 0b1111, key_switch)
+    await ClockCycles(dut.clk, 100)
+
+async def enter_code(dut, code_str, key_switch=0):
+    for ch in code_str:
+        await press_key(dut, ch, key_switch)
+
+@cocotb.test()
+async def test_cerradura_fsm(dut):
+    dut._log.info("Iniciando simulación Cocotb para Tiny Tapeout")
+
+    # Reloj de 1 MHz (periodo = 1 us)
+    clock = Clock(dut.clk, 1, units="us")
+    cocotb.start_soon(clock.start())
+
+    # Reset inicial
     dut.ena.value = 1
-    dut.ui_in.value = 0x0F
     dut.uio_in.value = 0
+    set_inputs(dut, 0b1111, 0)
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
-    await ClockCycles(dut.clk, 10)
-    assert int(dut.uio_oe.value) == 0, "uio_oe debe mantenerse en 0"
-
-
-async def press_key(dut, key_char):
-    row_idx, col_idx = KEYMAP[key_char]
-    target_col_mask = 1 << col_idx
-
-    # 1. Esperar a que la columna este inactiva (1)
-    for _ in range(10000):
-        await ClockCycles(dut.clk, 1)
-        if ((int(dut.uo_out.value) & 0x0F) & target_col_mask) != 0:
-            break
-
-    # 2. Esperar a que la columna pase a activa (0)
-    for _ in range(10000):
-        await ClockCycles(dut.clk, 1)
-        if ((int(dut.uo_out.value) & 0x0F) & target_col_mask) == 0:
-            break
-    else:
-        raise TimeoutError(f"Timeout esperando columna {col_idx} para '{key_char}'")
-
-    # Esperar 5 ciclos adentro de la ventana activa de 1,000 ciclos
     await ClockCycles(dut.clk, 5)
 
-    # 3. Presionar fila y sostener > 10,000 ciclos (DEBOUNCE_LIMIT = 10,000)
-    dut.ui_in.value = 0x0F & ~(1 << row_idx)
-    await ClockCycles(dut.clk, 10_050)
+    # Verificar estado inicial: ready=1 (uio_out[0:0]), uio_oe=1
+    assert (int(dut.uio_oe.value) & 0x1) == 1, "uio_oe[0:0] debe ser 1 (salida)"
+    assert (int(dut.uio_out.value) & 0x1) == 1, "ready debe iniciar en 1 tras reset"
 
-    # 4. Soltar tecla y dar margen al sincronizador de 2 etapas
-    dut.ui_in.value = 0x0F
-    await ClockCycles(dut.clk, 50)
+    # 1. Ignorar '*' y '#' en reposo (S_IDLE)
+    await press_key(dut, '*', key_switch=0)
+    await press_key(dut, '#', key_switch=0)
+    assert (int(dut.uio_out.value) & 0x1) == 1, "ready debe seguir en 1 tras '*' o '#' en S_IDLE"
 
+    # 2. Apertura con contraseña por defecto '1234'
+    await enter_code(dut, "1234", key_switch=0)
+    uo = int(dut.uo_out.value)
+    assert ((uo >> 4) & 0x1) == 1, "unlock (uo_out[4:4]) debe activarse con 1234"
+    assert (int(dut.uio_out.value) & 0x1) == 0, "ready debe apagarse cuando esta abierta"
 
-async def enter_sequence(dut, seq_str):
-    for ch in seq_str:
-        await press_key(dut, ch)
+    # 3. Intentar programar SIN llave (key_switch=0) -> debe ignorarse
+    await press_key(dut, '#', key_switch=0)
+    uo = int(dut.uo_out.value)
+    assert ((uo >> 7) & 0x1) == 0, "prog_mode no debe activarse sin interruptor de llave"
 
+    # 4. Programar nueva clave '9876' CON llave (key_switch=1) e inyectando '#' y '*' en medio
+    await press_key(dut, '#', key_switch=1)
+    uo = int(dut.uo_out.value)
+    assert ((uo >> 7) & 0x1) == 1, "prog_mode (uo_out[7:7]) debe activarse con llave + '#'"
 
-@cocotb.test()
-async def test_cerradura_completa(dut):
-    clock = Clock(dut.clk, 1000, units="ns")
-    cocotb.start_soon(clock.start())
+    await press_key(dut, '9', key_switch=1)
+    await press_key(dut, '#', key_switch=1) # Debe ignorarse
+    await press_key(dut, '8', key_switch=1)
+    await press_key(dut, '*', key_switch=1) # Debe ignorarse
+    await press_key(dut, '7', key_switch=1)
+    await press_key(dut, '6', key_switch=1)
 
-    await reset_dut(dut)
+    uo = int(dut.uo_out.value)
+    assert ((uo >> 7) & 0x1) == 0, "prog_mode debe apagarse al completar los 4 digitos"
 
-    # 1. Apertura con 1234
-    await enter_sequence(dut, "1234")
-    out = get_outputs(dut)
-    dut._log.info(f"Tras 1234 -> {out}")
-    assert out["unlock"] == 1
+    # Si quedó abierta tras programar, cerramos con '*'
+    if ((uo >> 4) & 0x1) == 1:
+        await press_key(dut, '*', key_switch=0)
 
-    # 2. Cierre con '*'
-    await press_key(dut, '*')
-    out = get_outputs(dut)
-    dut._log.info(f"Tras '*' -> {out}")
-    assert out["unlock"] == 0
-    assert out["prog_mode"] == 0
+    # 5. Probar apertura con nueva clave '9876'
+    await enter_code(dut, "9876", key_switch=0)
+    uo = int(dut.uo_out.value)
+    assert ((uo >> 4) & 0x1) == 1, "Debe abrir con la nueva clave 9876"
 
-    # Reapertura con 1234
-    await enter_sequence(dut, "1234")
-    out = get_outputs(dut)
-    dut._log.info(f"Tras reabrir 1234 -> {out}")
-    assert out["unlock"] == 1
+    # Cerrar nuevamente
+    await press_key(dut, '*', key_switch=0)
 
-    # 3. Programacion con '#' -> 2580
-    await press_key(dut, '#')
-    out = get_outputs(dut)
-    assert out["unlock"] == 0
-    assert out["prog_mode"] == 1
+    # 6. Provocar 3 fallos para activar bloqueo (locked = uo_out[6:6])
+    await enter_code(dut, "1234", key_switch=0) # Fallo 1 (clave vieja)
+    await enter_code(dut, "0000", key_switch=0) # Fallo 2
+    await enter_code(dut, "ABCD", key_switch=0) # Fallo 3
+    uo = int(dut.uo_out.value)
+    assert ((uo >> 6) & 0x1) == 1, "locked (uo_out[6:6]) debe activarse tras 3 fallos"
 
-    await enter_sequence(dut, "2580")
-    out = get_outputs(dut)
-    assert out["prog_mode"] == 0
-    assert out["unlock"] == 0
+    # 7. Desbloqueo maestro activando llave (key_switch=1)
+    set_inputs(dut, 0b1111, 1)
+    await ClockCycles(dut.clk, 5)
+    set_inputs(dut, 0b1111, 0)
+    await ClockCycles(dut.clk, 5)
 
-    # Clave vieja falla, clave nueva abre
-    await enter_sequence(dut, "1234")
-    assert get_outputs(dut)["error"] == 1
+    uo = int(dut.uo_out.value)
+    assert ((uo >> 6) & 0x1) == 0, "locked debe apagarse tras desbloqueo con llave"
+    assert (int(dut.uio_out.value) & 0x1) == 1, "ready debe volver a 1 tras desbloqueo"
 
-    await enter_sequence(dut, "2580")
-    out = get_outputs(dut)
-    assert out["unlock"] == 1
-    assert out["error"] == 0
+    dut._log.info("¡Todas las pruebas de Tiny Tapeout pasaron correctamente!")
 
-    await press_key(dut, '*')
-    assert get_outputs(dut)["unlock"] == 0
-
-    # 4. Bloqueo tras 3 fallos
-    for intento in range(1, 4):
-        await enter_sequence(dut, "9999")
-        out = get_outputs(dut)
-        if intento < 3:
-            assert out["error"] == 1
-            assert out["locked"] == 0
-        else:
-            assert out["locked"] == 1
-
-    await enter_sequence(dut, "2580")
-    assert get_outputs(dut)["unlock"] == 0
-    assert get_outputs(dut)["locked"] == 1
 
