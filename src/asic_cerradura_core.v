@@ -4,18 +4,37 @@ module asic_cerradura_core (
     input  wire       clk,        // Reloj principal del ASIC (1 MHz)
     input  wire       rst_n,      // Reset global activo en bajo
     input  wire [3:0] row_async,  // Entradas físicas del teclado (asíncronas)
+    input  wire       prog_en,    // Interruptor de llave físico
     output reg  [3:0] col,        // Salidas de barrido hacia los pads del chip
     output wire       unlock,     // Pin de salida: Cerradura abierta
     output wire       error_led,  // Pin de salida: Error en clave
     output wire       locked,     // Pin de salida: Bloqueo por seguridad
-    output wire       prog_mode   // Pin de salida: Modo programación activo
+    output wire       prog_mode,  // Pin de salida: Modo programación activo
+    output wire       ready       // NUEVO: 1 = Lista para recibir clave
 );
 
-    localparam [15:0] DEBOUNCE_LIMIT = 16'd10_000; // 10 ms a 1 MHz
+	 localparam [15:0] DEBOUNCE_LIMIT = 16'd10_000; // 10 ms a 1 MHz
     localparam [15:0] SCAN_LIMIT     = 16'd1_000;  // 1 ms por columna a 1 MHz
     localparam [3:0]  KEY_LOCK       = 4'hE;       // Tecla '*' para cerrar manualmente
     localparam [3:0]  KEY_PROG       = 4'hF;       // Tecla '#' para programar
 
+	 // ------------------------------------------------------------------------
+    // Sincronizador para el interruptor de llave
+	 // ------------------------------------------------------------------------
+    reg prog_sync_1, prog_sync;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            prog_sync_1 <= 1'b0;
+            prog_sync   <= 1'b0;
+        end else begin
+            prog_sync_1 <= prog_en;
+            prog_sync   <= prog_sync_1;
+        end
+    end
+	 
+	 
+	 
+	 
     // ------------------------------------------------------------------------
     // 1. Sincronizador de doble Flip-Flop
     // ------------------------------------------------------------------------
@@ -135,6 +154,8 @@ module asic_cerradura_core (
 
     // Registros de la contraseña actual (Valor por defecto en reset: 1-2-3-4)
     reg [3:0] pass_d1, pass_d2, pass_d3, pass_d4;
+	 
+	 wire es_digito_valido = (key_code != KEY_LOCK) && (key_code != KEY_PROG);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -152,13 +173,14 @@ module asic_cerradura_core (
             if (intento_fallido) begin
                 intentos  <= intentos + 2'd1;
                 error_reg <= 1'b1;
-            end else if (estado_siguiente == S_UNLOCK) begin
+            end else if ((estado_siguiente == S_UNLOCK) || 
+                         ((estado_actual == S_LOCKED) && (estado_siguiente == S_IDLE))) begin
                 intentos  <= 2'd0;
                 error_reg <= 1'b0;
             end
 
-            // Guardado secuencial de la nueva clave cuando llega cada dígito
-            if (key_valid) begin
+ 		      // Guardado secuencial de la nueva clave (ignora '*' y '#')
+            if (key_valid && es_digito_valido) begin
                 case (estado_actual)
                     S_PROG1: pass_d1 <= key_code;
                     S_PROG2: pass_d2 <= key_code;
@@ -167,16 +189,25 @@ module asic_cerradura_core (
                     default: ; // Mantiene los valores guardados
                 endcase
             end
+
+				
         end
     end
-
+	 
+    
     always @(*) begin
         estado_siguiente = estado_actual;
         intento_fallido  = 1'b0;
 
         case (estado_actual)
-            // --- Validación de clave ---
-            S_IDLE:   if (key_valid) estado_siguiente = (key_code == pass_d1) ? S_OK1 : S_ERR1;
+          	// --- Validación de clave (ignora '*' y '#' en reposo) ---
+            S_IDLE: begin
+                if (key_valid && es_digito_valido) begin
+                    estado_siguiente = (key_code == pass_d1) ? S_OK1 : S_ERR1;
+                end
+            end
+
+				
             S_OK1:    if (key_valid) estado_siguiente = (key_code == pass_d2) ? S_OK2 : S_ERR2;
             S_OK2:    if (key_valid) estado_siguiente = (key_code == pass_d3) ? S_OK3 : S_ERR3;
             S_OK3:    if (key_valid) begin
@@ -195,29 +226,36 @@ module asic_cerradura_core (
                 intento_fallido  = 1'b1;
                 estado_siguiente = (intentos == 2'd2) ? S_LOCKED : S_IDLE;
             end
-
-            // --- Cerradura abierta: '*' cierra manualmente, '#' entra a programar ---
+							
+				// --- Cerradura abierta: '*' cierra, ('#' AND llave) entra a programar ---
             S_UNLOCK: begin
                 if (key_valid) begin
                     if (key_code == KEY_LOCK)
                         estado_siguiente = S_IDLE;
-                    else if (key_code == KEY_PROG)
+                    else if ((key_code == KEY_PROG) && prog_sync)
                         estado_siguiente = S_PROG1;
+                    else if (key_code == KEY_PROG)
+                        estado_siguiente = S_UNLOCK; // Ignora '#' si la llave no está activada
                     else
                         estado_siguiente = (key_code == pass_d1) ? S_OK1 : S_ERR1;
                 end
             end
-
-
-            
-            // --- Estados de programación de 4 dígitos ---
-            S_PROG1:  if (key_valid) estado_siguiente = S_PROG2;
-            S_PROG2:  if (key_valid) estado_siguiente = S_PROG3;
-            S_PROG3:  if (key_valid) estado_siguiente = S_PROG4;
-            S_PROG4:  if (key_valid) estado_siguiente = S_IDLE; // Guarda el 4to y cierra
-
+				      
+            // --- Estados de programación de 4 dígitos (ignoran '*' y '#') ---
+            S_PROG1: if (key_valid && es_digito_valido) estado_siguiente = S_PROG2;
+            S_PROG2: if (key_valid && es_digito_valido) estado_siguiente = S_PROG3;
+            S_PROG3: if (key_valid && es_digito_valido) estado_siguiente = S_PROG4;
+            S_PROG4: if (key_valid && es_digito_valido) estado_siguiente = S_IDLE; // Guarda el 4to y cierra
+	
+	
             // --- Bloqueo permanente ---
-            S_LOCKED: estado_siguiente = S_LOCKED;
+            //S_LOCKED: estado_siguiente = S_LOCKED;
+				// --- Bloqueo por 3 fallos: se libera con Reset o girando la llave (prog_sync) ---
+            S_LOCKED: begin
+                if (prog_sync)
+                    estado_siguiente = S_IDLE;
+            end
+				
             default:  estado_siguiente = S_IDLE;
         endcase
     end
@@ -227,5 +265,6 @@ module asic_cerradura_core (
     assign error_led = error_reg;
     assign prog_mode = (estado_actual == S_PROG1) || (estado_actual == S_PROG2) ||
                        (estado_actual == S_PROG3) || (estado_actual == S_PROG4);
+	 assign ready     = (estado_actual == S_IDLE); // <-- NUEVO: Activa solo en estado inicial
 
 endmodule
