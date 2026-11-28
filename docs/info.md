@@ -32,6 +32,7 @@ This project implements a **digital electronic lock based on a Finite State Mach
 | Pin | Direction | Function |
 | :--- | :--- | :--- |
 | `ui_in[3:0]` | Input | Keypad Rows 0–3 (active-low, external 10 kΩ pull-ups required) |
+| `ui_in[4]` | Input | Phisical sw key (prog_en: enable programmig and master unlocking) |
 | `uo_out[3:0]` | Output | Keypad Columns 0–3 (active-low column scan) |
 | `uo_out` | Output | `unlock` — High (`1`) when unlocked |
 | `uo_out` | Output | `error` — High (`1`) after an incorrect 4-digit attempt |
