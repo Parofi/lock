@@ -10,17 +10,22 @@ smaller than 512 kb, and should be named sequentially (e.g. `info1.png`, `info2.
 
 ## How it works
 
-This project implements a programmable 4-digit digital combination lock controlled by a 4x4 matrix keypad, designed as a synchronous Finite State Machine (FSM) running at a 1 MHz system clock.
+This project implements a **digital electronic lock based on a Finite State Machine (FSM)** designed to operate with a 4x4 matrix keypad and a physical security key switch, operating at a clock frequency of **1 MHz**.
 
 ### Internal Architecture
-1. **Input Synchronizer:** A two-stage flip-flop synchronizer samples the 4 asynchronous keypad row inputs (`ui_in[3:0]`) to prevent metastability.
-2. **Matrix Scanner & Debouncer:** Continuously scans the 4 keypad columns (`uo_out[3:0]`) using active-low strobes (~1 ms per column) and applies a 10 ms (`10,000` clock cycles at 1 MHz) debounce filter to produce a clean, single-cycle `key_valid` strobe per keypress.
-3. **Security & Programming FSM:**
-   - **Default Passcode:** After an active-low reset (`rst_n = 0`), the passcode defaults to **`1 - 2 - 3 - 4`**.
-   - **Unlock (`uo_out = 1`):** Entering the matching 4-digit sequence asserts `unlock` and clears any previous error flag.
-   - **Manual Lock (`*` key):** While unlocked, pressing **`*`** immediately closes the lock (`unlock = 0`) and returns to the idle state without modifying the stored passcode.
-   - **Passcode Programming (`#` key):** While unlocked, pressing **`#`** enters programming mode (`prog_mode = 1` on `uo_out`). The next 4 digits entered overwrite the internal passcode registers and automatically return the lock to the closed state.
-   - **Error & Lockout (`uo_out` & `uo_out`):** To avoid leaking partial matches, the FSM evaluates complete 4-digit attempts. An incorrect 4-digit sequence asserts `error` (`uo_out`). After **3 consecutive failed attempts**, the system enters a permanent lockout state (`locked = 1` on `uo_out`) that ignores all keypad inputs until `rst_n` is asserted.
+1. **Matrix Synchronization and Scanning:**
+   * The 4 row lines on the keyboard ('ui_in[3:0]') pass through double Flip-Flop synchronizers to avoid metastability.
+   * The controller performs an active low-scan across the 4 columns ('uo_out[3:0]') at a rate of **1 ms per column** ('1,000' cycles at 1 MHz). When a keystroke is detected, the scan freezes to stabilize the reading.
+2. **Debouncer Filter:**
+   * Includes a **10 ms** timer ('10,000' cycles) plus a clean edge detector that generates a validation pulse of 1 cycle ('key_valid') per physical press, preventing multiple readings when holding down a key.
+3. **Security States Machine (13 States):**
+   * **Default key:** After a reset ('rst_n = 0'), the initial password set is **'1-2-3-4'**.
+   * **Availability indicator ('ready' in 'uio_out'):** Remains at '1' only when the lock is at rest ('S_IDLE') waiting for the first digit, turning off as soon as a sequence begins.
+   * **Control key filtering:** The '*' (close) and '#' (programming) keys are ignored at rest ('S_IDLE') and during key changes ('S_PROG1.. 4') to avoid false errors or invalid passwords.
+   * **Physical key-protected reprogramming:** With the lock open ('unlock = 1'), pressing '#' along with the active key switch ('ui_in = 1', logical AND function) enables programming mode ('prog_mode = 1') to write 4 new digits ('0'–'9', 'A'–'D').
+   * **Master lock and recovery:** After **3 consecutive failed attempts**, the system enters a locked state ('locked = 1'), ignoring the keyboard until it receives a 'rst_n' or activates the physical key ('ui_in = 1').
+
+---
 
 ### Pinout Summary
 
@@ -37,16 +42,42 @@ This project implements a programmable 4-digit digital combination lock controll
 
 ## How to test
 
-1. **Power & Clock:** Supply 3.3 V (or nominal I/O voltage for the Tiny Tapeout carrier board), configure the project clock to **1 MHz**, and pulse `rst_n` low (`0`) then high (`1`) to initialize the lock to its default code (`1-2-3-4`).
-2. **Unlock Test:** Enter **`1` → `2` → `3` → `4`** on the keypad. Verify that `uo_out` (`unlock`) goes high (`1`).
-3. **Manual Lock Test:** While `uo_out` is high, press **`*`**. Verify that `uo_out` returns to `0`. Re-enter **`1` → `2` → `3` → `4`** to confirm it unlocks again.
-4. **Programming Test:** While unlocked (`uo_out = 1`), press **`#`**. Verify that `uo_out` (`prog_mode`) goes high (`1`). Enter a new 4-digit code (for example, **`2` → `5` → `8` → `0`**). After the 4th digit, `uo_out` turns off and the lock closes. Verify that `1-2-3-4` triggers `uo_out` (`error`) while `2-5-8-0` asserts `uo_out` (`unlock`).
-5. **Lockout Test:** From the locked state, enter any wrong 4-digit sequence three times in a row. On the 3rd failure, verify that `uo_out` (`locked`) asserts high (`1`) and that entering the valid passcode no longer unlocks the system until `rst_n` is toggled low.
+1. **Clock Setup and Reset:**
+   * Set the clock on the Tiny Tapeout card to **1 MHz** ('1,000,000 Hz').
+   * Make sure the key switch ('ui_in') is set to **'0' (GND)** and press the **Reset ('rst_n')** button.
+   * Verify that the **'ready' ('uio_out')** LED lights up ('1') and the other LEDs are off.
+
+2. **Default Key Opening and Manual Closing:**
+   * Enter the sequence **'1' - '2' - '3' - '4'** on the matrix keyboard. Pressing '1' will turn off 'ready'; completing '4' will turn off the **'unlock' ('uo_out')** LED.
+   * Press **'*'** to manually close the lock ('unlock' turns off and 'ready' turns back on).
+
+3. **Password Change Protected:**
+   * Opens the lock with '1-2-3-4'.
+   * Try pressing **'#'** with 'ui_in[4] = 0': the system will ignore it without activating 'prog_mode'.
+   * Activate the key switch (**'ui_in[4] = 1'**) and press **'#'**: the LED **'prog_mode' ('uo_out')** will light up.
+   * Enter 4 new valid digits (for example, **'9' - '8' - '7' - '6'**). At the fourth digit, 'prog_mode' will turn off.
+   * Return the key switch to **'0'**, close the lock with **'*'** and check that it now opens with '9-8-7-6'.
+
+4. **Block for 3 Bugs and Master Unlock:**
+   * With the lock closed, enter three incorrect 4-digit passwords (for example, '1-2-3-4', '0-0-0-0', 'A-B-C-D').
+   * On the first two failures, **'error' ('uo_out')** will be on; on the third failure, **'locked' ('uo_out')** will be turned on and 'ready' will be turned off.
+   * To release the lock without resetting the saved password, briefly activate the key switch (**'ui_in = 1'**) and set it back to **'0'**: 'locked' and 'error' will turn off and 'ready' will return to '1'.
 
 ---
 
+
 ## External hardware
 
-- **4x4 Matrix Keypad:** Standard 16-key membrane or mechanical matrix keypad (`1-9`, `0`, `A-D`, `*`, `#`) connected to `ui_in[3:0]` (rows) and `uo_out[3:0]` (columns).
-- **4 × 10 kΩ Pull-up Resistors:** Connected between 3.3 V (VCC) and each of the 4 row inputs (`ui_in` through `ui_in`), since internal pull-ups are not enabled by default on `ui_in`.
-- **4 × Status LEDs (with 330 Ω–1 kΩ current-limiting resistors):** Connected to `uo_out` (Unlock), `uo_out` (Error), `uo_out` (Locked), and `uo_out` (Programming Mode) to observe lock status.
+To operate the ASIC on real hardware, the following external components connected to the Tiny Tapeout headers (logic levels of **3.3 V**) are required:
+
+* **Passive 4x4 Matrix Keyboard:**
+  * **Columns (ASIC Outputs):** Connect 'uo_out[3:0]' to the 4 keyboard columns ('Col0' = 'uo_out', 'Col1' = 'uo_out', 'Col2' = 'uo_out', 'Col3' = 'uo_out'). *(Optional: place 1N5819 Schottky diodes in series for protection against simultaneous keys).*
+  * **Rows (ASIC Inputs):** Connect 'ui_in[3:0]' to the 4 rows of the keyboard ('Row0' = 'ui_in', 'Row1' = 'ui_in', 'Row2' = 'ui_in', 'Row3' = 'ui_in') with **4 external Pull-up resistors of 10 kΩ connected to 3.3 V**.
+* **Physical Key Switch (or SPST Switch):**
+  * Connected between **3.3 V** and pin **'ui_in'**, accompanied by a **10 kΩ GND Pull-down resistor** to ensure a stable logical '0' when the key is removed.
+* **5 Status Indicator LEDs (with limiting resistors from 330 Ω to GND):**
+  * **'uo_out' ('unlock'):** Green LED (Open lock / control signal to power stage for solenoid).
+  * **'uo_out' ('error'):** Amber/Yellow LED (Incorrect password).
+  * **'uo_out' ('locked'):** Red LED (Security lock after 3 failures).
+  * **'uo_out' ('prog_mode'):** Blue LED (Active programming mode).
+  * **'uio_out' ('ready'):** White/Light Green LED (Lock ready at rest).
